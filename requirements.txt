@@ -1,0 +1,7 @@
+xlrd == 2.0.1
+sqlalchemy
+geoalchemy2
+geopandas
+shapely
+pymssql
+tqdm
