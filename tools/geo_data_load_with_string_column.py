@@ -8,6 +8,7 @@ from sqlalchemy import create_engine
 import os
 import pandas as pd
 import geopandas as gpd
+import numpy as np
 
 from sqlalchemy import types
 from datetime import datetime
@@ -32,20 +33,42 @@ POINT_COLUMN_MAP = {"测量点号": "id",
                     "类型": "d_type",
                     "工程编号": "project_id"}
 POINT_COLUMN_INFO = {"id": types.Integer(),
-                    "x": types.DECIMAL(38, 8),
-                    "y": types.DECIMAL(38, 8),
-                    "z": types.DECIMAL(38, 8),
-                    "d": types.DECIMAL(38, 8),
-                    "caliber": types.Integer(),
-                    "status": types.String(50),
+                     "x": types.DECIMAL(38, 8),
+                     "y": types.DECIMAL(38, 8),
+                     "z": types.DECIMAL(38, 8),
+                     "d": types.DECIMAL(38, 8),
+                     "caliber": types.Integer(),
+                     "status": types.String(50),
+                     "d_type": types.String(100),
+                     "project_id": types.String(100),
+                     "geometry": types.String(8000)}
+
+LINE_FILE_NAME = "20220506数据迁移线数据%d.csv"
+LINE_FILE_NUMBER = 6
+LINE_TABLE_NAME = "SL_ORIGIN"
+LINE_STAG_TABLE_NAME = "%s_%s" % (LINE_TABLE_NAME, TABLE_STAG_NAME)
+LINE_COLUMN_MAP = {"测量点号": "start_id",
+                   "上接点号": "end_id",
+                   "类型": "d_type",
+                   "工程编号": "project_id",
+                   "原GISNO": "old_gis_no"}
+LINE_COLUMN_INFO = {"start_id": types.Integer(),
+                    "end_id": types.Integer(),
                     "d_type": types.String(100),
                     "project_id": types.String(100),
+                    "old_gis_no": types.Integer(),
+                    "start_point": types.String(500),
+                    "end_point": types.String(500),
                     "geometry": types.String(8000)}
 
 TABLE_DETAILED_LIST = {"point": {"name": POINT_TABLE_NAME,
                                  "stag": POINT_STAG_TABLE_NAME,
                                  "column_info": POINT_COLUMN_INFO,
-                                 "column_map": POINT_COLUMN_MAP}}
+                                 "column_map": POINT_COLUMN_MAP},
+                       "line": {"name": LINE_TABLE_NAME,
+                                "stag": LINE_STAG_TABLE_NAME,
+                                "column_info": LINE_COLUMN_INFO,
+                                "column_map": LINE_COLUMN_MAP}, }
 
 
 def drop_table_if_exists(table_name_list, engine):
@@ -89,12 +112,13 @@ def change_str_to_geo(which_table, engine):
     with engine.connect().execution_options(autocommit=True) as conn:
         conn.execute(sql_stet)
 
+
 def chunker(seq, size):
     # from http://stackoverflow.com/a/434328
     return (seq[pos:pos + size] for pos in range(0, len(seq), size))
 
 
-def insert_to_mssql(df, engine, table_name):
+def insert_to_mssql(df, engine, table_name, data_type):
     chunk_size = int(len(df) * 0.1)
     with tqdm(total=len(df)) as pbar:
         for i, cdf in enumerate(chunker(df, chunk_size)):
@@ -103,17 +127,22 @@ def insert_to_mssql(df, engine, table_name):
                        engine,
                        if_exists=replace,
                        index=False,
-                       dtype=POINT_COLUMN_INFO)
+                       dtype=data_type)
             pbar.update(chunk_size)
 
 
+print("##################################################")
+print("############## GEO DATA LOAD START ###############")
+print("##################################################")
 start_time = datetime.now()
 
 pd.set_option("max_rows", None)
 
-point_df = gpd.GeoDataFrame()
+print("##################################################")
+print("############## Loads point data ##################")
+print("##################################################")
 
-print("Loads point data")
+point_df = gpd.GeoDataFrame()
 
 for i in range(1, POINT_FILE_NUMBER):
     new_gdf = gpd.read_file(os.path.join(DATA_FILE_PATH, POINT_FILE_NAME) % i)
@@ -125,19 +154,66 @@ point_df = point_df.rename(columns=POINT_COLUMN_MAP, errors="raise")
 
 point_df["geometry"] = "POINT (" + point_df["x"] + " " + point_df["y"] + ")"
 
-print("Connect Mssql")
-# mssql_engine = create_engine("mssql+pymssql://sa:m?~9nfhqZR%TXzY@192.168.1.31:2433/Lm_TestXS")
+print("##################################################")
+print("############### Loads line data ##################")
+print("##################################################")
+
+line_df = gpd.GeoDataFrame()
+
+for i in range(1, LINE_FILE_NUMBER):
+    new_gdf = gpd.read_file(os.path.join(DATA_FILE_PATH, LINE_FILE_NAME) % i)
+    print("Show new line cnt: ", len(new_gdf.index))
+    line_df = line_df.append(new_gdf)
+    print("Show total line cnt: ", len(line_df.index))
+
+line_df = line_df.rename(columns=LINE_COLUMN_MAP, errors="raise")
+
+# Merge start id
+line_merge_df = line_df.merge(point_df, how='left', left_on="start_id", right_on="id")
+
+line_df["start_point"] = line_merge_df["x"] + " " + line_merge_df["y"]
+
+# Merge end id
+line_merge_df = line_df.merge(point_df, how='left', left_on="end_id", right_on="id")
+
+line_df["end_point"] = line_merge_df["x"] + " " + line_merge_df["y"]
+
+line_df["geometry"] = np.where(((line_df["start_point"] == line_df["end_point"])
+                                | (line_df["start_point"].str.len() == 1)
+                                | (line_df["end_point"].str.len() == 1)),
+                               np.nan,
+                               "LINESTRING (" + line_df["start_point"] + " 0, " + line_df["end_point"] + " 0)")
+
+
+print("##################################################")
+print("################ Connect Mssql ###################")
+print("##################################################")
+
 mssql_engine = create_engine("mssql+pyodbc://sa:m?~9nfhqZR%TXzY@mssql?driver=ODBC+Driver+17+for+SQL+Server",
                              fast_executemany=True)
 
-drop_table_if_exists(table_name_list=[POINT_TABLE_NAME, POINT_STAG_TABLE_NAME],
+drop_table_if_exists(table_name_list=[POINT_TABLE_NAME,
+                                      POINT_STAG_TABLE_NAME,
+                                      LINE_TABLE_NAME,
+                                      LINE_STAG_TABLE_NAME
+                                      ],
                      engine=mssql_engine)
 
 print("Input point data to table")
-insert_to_mssql(df=point_df, engine=mssql_engine, table_name=POINT_STAG_TABLE_NAME)
+insert_to_mssql(df=point_df,
+                engine=mssql_engine,
+                table_name=POINT_STAG_TABLE_NAME,
+                data_type=POINT_COLUMN_INFO)
+
+print("Input line data to table")
+insert_to_mssql(df=line_df,
+                engine=mssql_engine,
+                table_name=LINE_STAG_TABLE_NAME,
+                data_type=LINE_COLUMN_INFO)
 
 print("Change string to geo")
 change_str_to_geo(which_table="point", engine=mssql_engine)
+change_str_to_geo(which_table="line", engine=mssql_engine)
 
 end_time = datetime.now()
 
