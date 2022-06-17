@@ -61,6 +61,20 @@ LINE_COLUMN_INFO = {"start_id": types.Integer(),
                     "end_point": types.String(500),
                     "geometry": types.String(8000)}
 
+WATER_METER_FILE_NAME = "20220506数据迁移水表数据%d.csv"
+WATER_METER_FILE_NUMBER = 3
+WATER_METER_TABLE_NAME = "SP_WATER_METER"
+WATER_METER_STAG_TABLE_NAME = "%s_%s" % (WATER_METER_TABLE_NAME, TABLE_STAG_NAME)
+WATER_METER_COLUMN_MAP = {"水表箱编号": "water_meter_id",
+                          "类型": "d_type",
+                          "工程编号": "project_id",
+                          "原GISNO": "old_gis_no"}
+WATER_METER_COLUMN_INFO = {"water_meter_id": types.Integer(),
+                           "d_type": types.String(100),
+                           "project_id": types.String(100),
+                           "old_gis_no": types.Integer(),
+                           "geometry": types.String(8000)}
+
 TABLE_DETAILED_LIST = {"point": {"name": POINT_TABLE_NAME,
                                  "stag": POINT_STAG_TABLE_NAME,
                                  "column_info": POINT_COLUMN_INFO,
@@ -68,7 +82,12 @@ TABLE_DETAILED_LIST = {"point": {"name": POINT_TABLE_NAME,
                        "line": {"name": LINE_TABLE_NAME,
                                 "stag": LINE_STAG_TABLE_NAME,
                                 "column_info": LINE_COLUMN_INFO,
-                                "column_map": LINE_COLUMN_MAP}, }
+                                "column_map": LINE_COLUMN_MAP},
+                       "water_meter": {"name": WATER_METER_TABLE_NAME,
+                                       "stag": WATER_METER_STAG_TABLE_NAME,
+                                       "column_info": WATER_METER_COLUMN_INFO,
+                                       "column_map": WATER_METER_COLUMN_MAP},
+                       }
 
 
 def drop_table_if_exists(table_name_list, engine):
@@ -119,7 +138,7 @@ def chunker(seq, size):
 
 
 def insert_to_mssql(df, engine, table_name, data_type):
-    chunk_size = int(len(df) * 0.1)
+    chunk_size = int(len(df) * 0.05)
     with tqdm(total=len(df)) as pbar:
         for i, cdf in enumerate(chunker(df, chunk_size)):
             replace = "replace" if i == 0 else "append"
@@ -184,6 +203,25 @@ line_df["geometry"] = np.where(((line_df["start_point"] == line_df["end_point"])
                                np.nan,
                                "LINESTRING (" + line_df["start_point"] + " 0, " + line_df["end_point"] + " 0)")
 
+print("##################################################")
+print("########### Loads water meter data ###############")
+print("##################################################")
+
+water_meter_df = gpd.GeoDataFrame()
+
+for i in range(1, WATER_METER_FILE_NUMBER):
+    new_gdf = gpd.read_file(os.path.join(DATA_FILE_PATH, WATER_METER_FILE_NAME) % i)
+    print("Show new water meter cnt: ", len(new_gdf.index))
+    water_meter_df = water_meter_df.append(new_gdf)
+    print("Show total water meter cnt: ", len(water_meter_df.index))
+
+water_meter_df = water_meter_df.rename(columns=WATER_METER_COLUMN_MAP, errors="raise")
+
+water_meter_df_merged = water_meter_df.merge(point_df, how='left', left_on="water_meter_id", right_on="id")
+
+water_meter_df["geometry"] = water_meter_df_merged["geometry_y"]
+
+water_meter_df["old_gis_no"] = np.where((water_meter_df["old_gis_no"] == "NULL"), 0, water_meter_df["old_gis_no"])
 
 print("##################################################")
 print("################ Connect Mssql ###################")
@@ -195,7 +233,9 @@ mssql_engine = create_engine("mssql+pyodbc://sa:m?~9nfhqZR%TXzY@mssql?driver=ODB
 drop_table_if_exists(table_name_list=[POINT_TABLE_NAME,
                                       POINT_STAG_TABLE_NAME,
                                       LINE_TABLE_NAME,
-                                      LINE_STAG_TABLE_NAME
+                                      LINE_STAG_TABLE_NAME,
+                                      WATER_METER_TABLE_NAME,
+                                      WATER_METER_STAG_TABLE_NAME
                                       ],
                      engine=mssql_engine)
 
@@ -211,9 +251,16 @@ insert_to_mssql(df=line_df,
                 table_name=LINE_STAG_TABLE_NAME,
                 data_type=LINE_COLUMN_INFO)
 
+print("Input line data to table")
+insert_to_mssql(df=water_meter_df,
+                engine=mssql_engine,
+                table_name=WATER_METER_STAG_TABLE_NAME,
+                data_type=WATER_METER_COLUMN_INFO)
+
 print("Change string to geo")
 change_str_to_geo(which_table="point", engine=mssql_engine)
 change_str_to_geo(which_table="line", engine=mssql_engine)
+change_str_to_geo(which_table="water_meter", engine=mssql_engine)
 
 end_time = datetime.now()
 
