@@ -14,6 +14,7 @@ from sqlalchemy import types
 from datetime import datetime
 from tqdm import tqdm
 
+MSSQL_CONNECTION_STR = "sa:m?~9nfhqZR%TXzY@mssql?driver=ODBC+Driver+17+for+SQL+Server"
 DATA_FILE_PATH = r"C:\Users\zhang\Desktop\点线表数据"
 SRID_VALUE = 4326
 TABLE_STAG_NAME = "stag"
@@ -217,7 +218,7 @@ for i in range(1, WATER_METER_FILE_NUMBER):
 
 water_meter_df = water_meter_df.rename(columns=WATER_METER_COLUMN_MAP, errors="raise")
 
-water_meter_df_merged = water_meter_df.merge(point_df, how='left', left_on="water_meter_id", right_on="id")
+water_meter_df_merged = water_meter_df.merge(point_df, how="left", left_on="water_meter_id", right_on="id")
 
 water_meter_df["geometry"] = water_meter_df_merged["geometry_y"]
 
@@ -227,7 +228,7 @@ print("##################################################")
 print("################ Connect Mssql ###################")
 print("##################################################")
 
-mssql_engine = create_engine("mssql+pyodbc://sa:m?~9nfhqZR%TXzY@mssql?driver=ODBC+Driver+17+for+SQL+Server",
+mssql_engine = create_engine("mssql+pyodbc://%s" % MSSQL_CONNECTION_STR,
                              fast_executemany=True)
 
 drop_table_if_exists(table_name_list=[POINT_TABLE_NAME,
